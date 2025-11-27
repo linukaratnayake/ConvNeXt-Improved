@@ -12,6 +12,64 @@ import torch.nn.functional as F
 from timm.models.layers import trunc_normal_, DropPath
 from timm.models.registry import register_model
 
+class PatchMerging(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        # 1. Normalization
+        # We normalize the expanded features (4 * C) before reducing them.
+        self.norm = LayerNorm(4 * in_channels, eps=1e-6, data_format="channels_first")
+        
+        # 2. Linear Reduction
+        # This acts like a 1x1 convolution. It mixes the 4 pixels (now in channels)
+        # and compresses them to the desired output size (e.g., 2 * C).
+        self.reduction = nn.Linear(4 * in_channels, out_channels, bias=True)
+
+    def forward(self, x):
+        # x shape: (Batch_Size, Channels, Height, Width) -> e.g., (32, 96, 56, 56)
+        N, C, H, W = x.shape
+        
+        # --- Step 1: Handling Odd Sizes ---
+        # If the height or width is odd, we can't perfectly split it into 2x2 squares.
+        # F.pad adds a row/column of zeros to the right and bottom if needed.
+        # (0, W%2, 0, H%2) means: (Left=0, Right=W%2, Top=0, Bottom=H%2)
+        if H % 2 != 0 or W % 2 != 0:
+            x = F.pad(x, (0, W % 2, 0, H % 2))
+            _, _, H, W = x.shape  # Update dimensions after padding
+
+        # --- Step 2: Extracting the 4 pixels ---
+        # We manually slice the image tensor to grab the 4 corners of every 2x2 grid.
+        # Python slicing format is [start:end:step].
+        
+        # 0::2 means "start at 0, take every 2nd pixel" -> Indices 0, 2, 4...
+        # 1::2 means "start at 1, take every 2nd pixel" -> Indices 1, 3, 5...
+        
+        x0 = x[:, :, 0::2, 0::2]  # Top-Left pixels
+        x1 = x[:, :, 1::2, 0::2]  # Bottom-Left pixels
+        x2 = x[:, :, 0::2, 1::2]  # Top-Right pixels
+        x3 = x[:, :, 1::2, 1::2]  # Bottom-Right pixels
+
+        # --- Step 3: Stacking (The "Space to Depth" Trick) ---
+        # We concatenate these 4 tensors along dimension 1 (Channels).
+        # Original: (N, C, H/2, W/2)
+        # Result:   (N, 4C, H/2, W/2)
+        x = torch.cat([x0, x1, x2, x3], dim=1) 
+        
+        # --- Step 4: Normalization ---
+        x = self.norm(x)
+        
+        # --- Step 5: Linear Projection ---
+        # nn.Linear expects channels to be the LAST dimension.
+        # We permute from (N, 4C, H/2, W/2) -> (N, H/2, W/2, 4C)
+        x = x.permute(0, 2, 3, 1) 
+        
+        # Apply the linear layer to compress 4C -> out_channels (usually 2C)
+        x = self.reduction(x)
+        
+        # Permute back to standard PyTorch format: (N, out_C, H/2, W/2)
+        x = x.permute(0, 3, 1, 2)
+        
+        return x
+
 class Block(nn.Module):
     r""" ConvNeXt Block. There are two equivalent implementations:
     (1) DwConv -> LayerNorm (channels_first) -> 1x1 Conv -> GELU -> 1x1 Conv; all in (N, C, H, W)
@@ -76,10 +134,11 @@ class ConvNeXt(nn.Module):
         )
         self.downsample_layers.append(stem)
         for i in range(3):
-            downsample_layer = nn.Sequential(
-                    LayerNorm(dims[i], eps=1e-6, data_format="channels_first"),
-                    nn.Conv2d(dims[i], dims[i+1], kernel_size=2, stride=2),
-            )
+            # downsample_layer = nn.Sequential(
+            #         LayerNorm(dims[i], eps=1e-6, data_format="channels_first"),
+            #         nn.Conv2d(dims[i], dims[i+1], kernel_size=2, stride=2),
+            # )
+            downsample_layer = PatchMerging(dims[i], dims[i+1])
             self.downsample_layers.append(downsample_layer)
 
         self.stages = nn.ModuleList() # 4 feature resolution stages, each consisting of multiple residual blocks
