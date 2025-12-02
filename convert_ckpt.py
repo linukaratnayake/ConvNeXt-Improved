@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 
 # 1. Define paths
 # Use the ORIGINAL standard checkpoint for this conversion
@@ -10,6 +11,17 @@ checkpoint = torch.load(load_path, map_location='cpu')
 state_dict = checkpoint['model']
 
 new_state_dict = {}
+
+# Track dimensions for each stage to initialize fusion layers
+stage_dims = {
+    0: 96,   # Stage 0: 96 channels
+    1: 192,  # Stage 1: 192 channels
+    2: 384,  # Stage 2: 384 channels
+    3: 768   # Stage 3: 768 channels
+}
+
+# Count blocks per stage for ConvNeXt-Tiny [3, 3, 9, 3]
+blocks_per_stage = {0: 3, 1: 3, 2: 9, 3: 3}
 
 print("Converting checkpoint to Multi-Head Depthwise (MHDW) with 1:2:1 ratio...")
 
@@ -58,14 +70,34 @@ for k, v in state_dict.items():
         new_state_dict[f"{base_key}.dwconv_global.bias"] = b_global
 
     else:
-        # Copy everything else (Downsample layers, Norms, Pointwise convs, fusion layers) as is
+        # Copy everything else (Downsample layers, Norms, Pointwise convs) as is
         new_state_dict[k] = v
 
-# Note: fusion_norm and fusion layers will be randomly initialized since they don't exist in original checkpoint
-print("\nNote: fusion_norm and fusion layers will be randomly initialized (not in original checkpoint)")
+# Initialize fusion_norm and fusion layers for each block
+print("\nInitializing fusion_norm and fusion layers...")
+for stage_idx, num_blocks in blocks_per_stage.items():
+    dim = stage_dims[stage_idx]
+    for block_idx in range(num_blocks):
+        base_key = f"stages.{stage_idx}.{block_idx}.dwconv"
+        
+        # Initialize fusion_norm (LayerNorm parameters)
+        new_state_dict[f"{base_key}.fusion_norm.weight"] = torch.ones(dim)
+        new_state_dict[f"{base_key}.fusion_norm.bias"] = torch.zeros(dim)
+        
+        # Initialize fusion (1x1 Conv2d parameters)
+        # Use truncated normal initialization like the rest of ConvNeXt
+        fusion_weight = torch.empty(dim, dim, 1, 1)
+        nn.init.trunc_normal_(fusion_weight, std=0.02)
+        new_state_dict[f"{base_key}.fusion.weight"] = fusion_weight
+        new_state_dict[f"{base_key}.fusion.bias"] = torch.zeros(dim)
+        
+        print(f"  Initialized fusion layers for {base_key} (dim={dim})")
 
 # Save
 print(f"\nSaving converted checkpoint to {save_path}...")
 torch.save({'model': new_state_dict}, save_path)
-print("Success! Update your training command to use this new checkpoint.")
-print("\nThe standard path (7x7) gets 50% of channels, local (3x3) and global (dilated) each get 25%.")
+print("Success! Checkpoint ready for training.")
+print("\nSummary:")
+print("- Depthwise convs split with 1:2:1 ratio (Local:Standard:Global = 25%:50%:25%)")
+print("- Fusion layers initialized with standard ConvNeXt initialization")
+print("- All other layers copied from original checkpoint")
