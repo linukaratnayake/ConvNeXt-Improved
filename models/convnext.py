@@ -21,7 +21,7 @@ class PatchMerging(nn.Module):
         # 2. Linear Reduction
         # This acts like a 1x1 convolution. It mixes the 4 pixels (now in channels)
         # and compresses them to the desired output size (e.g., 2 * C).
-        self.reduction = nn.Linear(4 * in_channels, out_channels, bias=False)
+        self.reduction = nn.Linear(4 * in_channels, out_channels)
 
     def forward(self, x):
         # x shape: (Batch_Size, Channels, Height, Width) -> e.g., (32, 96, 56, 56)
