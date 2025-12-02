@@ -12,6 +12,64 @@ import torch.nn.functional as F
 from timm.models.layers import trunc_normal_, DropPath
 from timm.models.registry import register_model
 
+class MultiScaleDepthwiseConv(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        # Split channels with 1:2:1 ratio (Local:Standard:Global)
+        # This emphasizes the standard 7x7 path (original ConvNeXt scale)
+        self.chunk_dim = dim // 4  # Base unit (1/4 of channels)
+        self.local_dim = self.chunk_dim  # 1/4 for local
+        self.standard_dim = self.chunk_dim * 2  # 2/4 = 1/2 for standard
+        self.global_dim = dim - self.local_dim - self.standard_dim  # Remaining 1/4 for global
+        
+        # Local Path: 3x3 kernel (Fine details)
+        self.dwconv_local = nn.Conv2d(
+            self.local_dim, self.local_dim, 
+            kernel_size=3, padding=1, groups=self.local_dim
+        )
+        
+        # Standard Path: 7x7 kernel (Original ConvNeXt scale) - Gets 2x channels
+        self.dwconv_standard = nn.Conv2d(
+            self.standard_dim, self.standard_dim, 
+            kernel_size=7, padding=3, groups=self.standard_dim
+        )
+        
+        # Global Path: 7x7 kernel with dilation=3 (Context ~19x19)
+        self.dwconv_global = nn.Conv2d(
+            self.global_dim, self.global_dim, 
+            kernel_size=7, padding=9, dilation=3, groups=self.global_dim
+        )
+
+        # Normalize before fusion to balance multi-scale features
+        self.fusion_norm = LayerNorm(dim, eps=1e-6, data_format="channels_first")
+        
+        # Add a 1x1 convolution to mix features across scales
+        self.fusion = nn.Conv2d(dim, dim, kernel_size=1)
+
+    def forward(self, x):
+        # x shape: [N, C, H, W]
+        
+        # Split channels with 1:2:1 ratio
+        x_local, x_standard, x_global = torch.split(
+            x, [self.local_dim, self.standard_dim, self.global_dim], dim=1
+        )
+        
+        # Process each scale independently
+        out_local = self.dwconv_local(x_local)
+        out_standard = self.dwconv_standard(x_standard)
+        out_global = self.dwconv_global(x_global)
+        
+        # Concatenate multi-scale features
+        out = torch.cat([out_local, out_standard, out_global], dim=1)
+
+        # Normalize to balance multi-scale features
+        out = self.fusion_norm(out)
+        
+        # Fuse with residual connection to preserve information
+        out = x + self.fusion(out)
+
+        return out
+
 class Block(nn.Module):
     r""" ConvNeXt Block. There are two equivalent implementations:
     (1) DwConv -> LayerNorm (channels_first) -> 1x1 Conv -> GELU -> 1x1 Conv; all in (N, C, H, W)
@@ -25,7 +83,8 @@ class Block(nn.Module):
     """
     def __init__(self, dim, drop_path=0., layer_scale_init_value=1e-6):
         super().__init__()
-        self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim) # depthwise conv
+        # self.dwconv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim) # depthwise conv
+        self.dwconv = MultiScaleDepthwiseConv(dim) # depthwise conv with multi-scale heads
         self.norm = LayerNorm(dim, eps=1e-6)
         self.pwconv1 = nn.Linear(dim, 4 * dim) # pointwise/1x1 convs, implemented with linear layers
         self.act = nn.GELU()
