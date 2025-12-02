@@ -16,19 +16,21 @@ class PatchMerging(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
         # 1. Normalization
-        # We normalize the expanded features (4 * C) before reducing them.
-        self.norm = LayerNorm(4 * in_channels, eps=1e-6, data_format="channels_first")
+        self.norm = LayerNorm(in_channels, eps=1e-6, data_format="channels_first")
         
         # 2. Linear Reduction
         # This acts like a 1x1 convolution. It mixes the 4 pixels (now in channels)
         # and compresses them to the desired output size (e.g., 2 * C).
-        self.reduction = nn.Linear(4 * in_channels, out_channels, bias=True)
+        self.reduction = nn.Linear(4 * in_channels, out_channels, bias=False)
 
     def forward(self, x):
         # x shape: (Batch_Size, Channels, Height, Width) -> e.g., (32, 96, 56, 56)
         N, C, H, W = x.shape
         
-        # --- Step 1: Handling Odd Sizes ---
+        # --- Step 1: Normalize before merging (more stable) ---
+        x = self.norm(x)
+        
+        # --- Step 2: Handling Odd Sizes ---
         # If the height or width is odd, we can't perfectly split it into 2x2 squares.
         # F.pad adds a row/column of zeros to the right and bottom if needed.
         # (0, W%2, 0, H%2) means: (Left=0, Right=W%2, Top=0, Bottom=H%2)
@@ -36,7 +38,7 @@ class PatchMerging(nn.Module):
             x = F.pad(x, (0, W % 2, 0, H % 2))
             _, _, H, W = x.shape  # Update dimensions after padding
 
-        # --- Step 2: Extracting the 4 pixels ---
+        # --- Step 3: Extracting the 4 pixels ---
         # We manually slice the image tensor to grab the 4 corners of every 2x2 grid.
         # Python slicing format is [start:end:step].
         
@@ -48,14 +50,11 @@ class PatchMerging(nn.Module):
         x2 = x[:, :, 0::2, 1::2]  # Top-Right pixels
         x3 = x[:, :, 1::2, 1::2]  # Bottom-Right pixels
 
-        # --- Step 3: Stacking (The "Space to Depth" Trick) ---
+        # --- Step 4: Stacking (The "Space to Depth" Trick) ---
         # We concatenate these 4 tensors along dimension 1 (Channels).
         # Original: (N, C, H/2, W/2)
         # Result:   (N, 4C, H/2, W/2)
         x = torch.cat([x0, x1, x2, x3], dim=1) 
-        
-        # --- Step 4: Normalization ---
-        x = self.norm(x)
         
         # --- Step 5: Linear Projection ---
         # nn.Linear expects channels to be the LAST dimension.
