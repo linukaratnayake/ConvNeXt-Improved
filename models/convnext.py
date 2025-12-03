@@ -65,8 +65,8 @@ class MultiScaleDepthwiseConv(nn.Module):
         # Normalize to balance multi-scale features
         out = self.fusion_norm(out)
         
-        # Fuse with residual connection to preserve information
-        out = x + self.fusion(out)
+        # Fuse features across scales
+        out = self.fusion(out)
 
         return out
 
