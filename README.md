@@ -1,3 +1,27 @@
+# ConvNeXt with Multi-Scale Depthwise Convolution
+
+> **⚠️ This is an improved version of the original ConvNeXt architecture**  
+> We have enhanced the original ConvNeXt by replacing the standard 7×7 depthwise convolution with a multi-scale depthwise convolution module. This improvement captures features at multiple receptive field scales simultaneously.
+
+## Our Improvement: Multi-Scale Depthwise Convolution
+
+We replace the single-scale 7×7 depthwise convolution in ConvNeXt blocks with a multi-scale module that processes features at three different scales:
+- **Local Path (3×3)**: Captures fine-grained details (25% of channels)
+- **Standard Path (7×7)**: Preserves original ConvNeXt receptive field (50% of channels)
+- **Global Path (7×7 dilated)**: Captures broader context with effective ~19×19 receptive field (25% of channels)
+
+### Architecture Diagram
+<img width="100%" alt="Multi-Scale Depthwise Convolution Architecture" src="https://github.com/user-attachments/assets/8e1eba87-e96a-43ed-9b07-5aa5196b3cc7" />
+
+*Figure: Multi-scale depthwise convolution module with 1:2:1 channel split ratio*
+
+### Training Results
+<img width="90%" alt="Training Accuracy Comparison" src="https://github.com/user-attachments/assets/53d25663-33c6-4c3d-bdbd-91a5d19ac5ca" />
+
+*Figure: Training accuracy comparison between original ConvNeXt and our multi-scale variant*
+
+---
+
 # [A ConvNet for the 2020s](https://arxiv.org/abs/2201.03545)
 
 Official PyTorch implementation of **ConvNeXt**, from the following paper:
